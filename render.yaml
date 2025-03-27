@@ -3,7 +3,7 @@ services:
     type: web
     env: node
     rootDir: .
-    buildCommand: npm install && cd app && npm install --production=false && npm run build
+    buildCommand: ls -la && mkdir -p app/client && cp -r client app/ && cp -r server app/ && cp vite.config.ts app/ && cp package.json app/ && cd app && npm install --production=false && npm run build
     startCommand: cd app && npm start
     envVars:
       - key: NODE_ENV
