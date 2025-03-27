@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Root package for the attendance app",
   "scripts": {
-    "build": "cd app && npm install --production=false && npm run build:client && npm run build:server",
+    "build": "cd app && npm install --production=false && npx vite build && npx esbuild server/index.ts --platform=node --bundle --external:@google-cloud/* --external:lightningcss --external:@babel/* --format=cjs --outfile=dist/server.js",
     "start": "cd app && npm start"
   },
   "engines": {
