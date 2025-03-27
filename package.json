@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Root package for the attendance app",
   "scripts": {
-    "build": "ls -la && mkdir -p app/client && cp -r client/* app/client/ && cp -r server app/ && cp vite.config.ts app/ && cd app && npm install --production=false && cd client && npx vite build && cd .. && npx esbuild server/index.ts --platform=node --bundle --external:@google-cloud/* --external:lightningcss --external:@babel/* --format=cjs --outfile=dist/server.js",
+    "build": "ls -la && mkdir -p app/client && cp -r client/* app/client/ && cp -r server app/ && cp client/index.html app/client/ && cp vite.config.ts app/ && cd app && npm install --production=false && cd client && ls -la && npx vite build && cd .. && npx esbuild server/index.ts --platform=node --bundle --external:@google-cloud/* --external:lightningcss --external:@babel/* --format=cjs --outfile=dist/server.js",
     "start": "cd app && npm start"
   },
   "engines": {
