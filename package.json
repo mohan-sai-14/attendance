@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "Root package for the attendance app",
   "scripts": {
-    "build": "mkdir -p build-app && cp -r app/* build-app/ && cd build-app && npm install --production=false && npm run build:client && npm run build:server && cd .. && mkdir -p dist/public && cp -r build-app/dist/public/* dist/public/ && cp build-app/dist/server.js dist/server.js",
-    "start": "node dist/server.js"
+    "build": "mkdir -p build-app && ls -la && cp -r client build-app/ && cp -r server build-app/ && cp vite.config.ts build-app/ && cp package.json build-app/ && cp tsconfig.json build-app/ && cd build-app && npm install --production=false && mkdir -p client/src && cp -r ../client/* client/ && mkdir -p node_modules/.vite && npx vite build && npx esbuild server/index.ts --platform=node --bundle --external:@google-cloud/* --external:lightningcss --external:@babel/* --format=cjs --outfile=dist/server.js && cd .. && mkdir -p dist/public && cp -r build-app/dist/public/* dist/public/ || true && cp build-app/dist/server.js dist/server.js || true",
+    "start": "NODE_ENV=production node dist/server.js"
   },
   "engines": {
     "node": ">=16.0.0"
