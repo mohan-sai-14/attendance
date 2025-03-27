@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Root package for the attendance app",
   "scripts": {
-    "build": "echo 'Building minimal Express server' && mkdir -p dist && echo 'const express = require(\"express\"); const app = express(); const port = process.env.PORT || 3000; app.use(express.static(\"public\")); app.get(\"/\", (req, res) => { res.sendFile(__dirname + \"/public/index.html\"); }); app.get(\"/api\", (req, res) => { res.json({message: \"Hello from Attendance API!\", status: \"running\"}); }); app.listen(port, () => { console.log(`Server listening on port ${port}`); });' > dist/server.js && mkdir -p public && echo '<html><head><title>Attendance App</title></head><body><h1>Attendance App</h1><p>Successfully deployed to Render!</p><p><a href=\"/api\">Check API Status</a></p></body></html>' > public/index.html && npm install express",
+    "build": "mkdir -p build-app && cp -r app/* build-app/ && cd build-app && npm install --production=false && npm run build:client && npm run build:server && cd .. && mkdir -p dist/public && cp -r build-app/dist/public/* dist/public/ && cp build-app/dist/server.js dist/server.js",
     "start": "node dist/server.js"
   },
   "engines": {
