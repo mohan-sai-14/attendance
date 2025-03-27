@@ -2,9 +2,9 @@ services:
   - name: attendance-api
     type: web
     env: node
-    rootDir: app
-    buildCommand: npm install && npm run build
-    startCommand: npm start
+    rootDir: .
+    buildCommand: npm install && cd app && npm install --production=false && npm run build
+    startCommand: cd app && npm start
     envVars:
       - key: NODE_ENV
         value: production
