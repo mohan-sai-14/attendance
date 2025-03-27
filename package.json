@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Root package for the attendance app",
   "scripts": {
-    "build": "cd app && npm install && npm run build",
+    "build": "cd app && npm install --production=false && npm run build",
     "start": "cd app && npm start"
   },
   "engines": {
