@@ -129,6 +129,102 @@ export default function QRGenerator() {
     }
   };
 
+  // After inserting the session, make a direct API request to help the server update its cache
+  const notifyActiveSessionChange = async () => {
+    try {
+      console.log("QR Generator: Notifying about active session change");
+      
+      // Create a unique timestamp to defeat any caching
+      const timestamp = new Date().getTime();
+      
+      // Make a direct request to the active session endpoint
+      const response = await fetch(`http://localhost:3000/api/sessions/active?_t=${timestamp}`, { 
+        method: 'GET',
+        headers: { 
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        },
+        cache: 'no-store'
+      });
+      
+      if (!response.ok) {
+        console.warn("QR Generator: Failed to refresh active session - server returned", response.status);
+        return;
+      }
+      
+      const result = await response.json();
+      console.log("QR Generator: Active session refresh response:", JSON.stringify(result, null, 2));
+      
+      if (result.success && result.data) {
+        console.log("QR Generator: Broadcasting session created with ID:", result.data.id);
+        
+        // If successful, broadcast a custom event that other components can listen for
+        // Try multiple broadcast methods to ensure at least one works
+        
+        // Method 1: Custom event
+        try {
+          const event = new CustomEvent('session-created', { 
+            detail: { sessionId: result.data?.id, timestamp: Date.now() } 
+          });
+          window.dispatchEvent(event);
+          console.log("QR Generator: Custom event dispatched");
+        } catch (e) {
+          console.warn("QR Generator: Custom event dispatch failed:", e);
+        }
+        
+        // Method 2: React Query global cache update
+        try {
+          // Update the React Query cache directly
+          supabase.queryClient.setQueryData(['/api/sessions/active'], {
+            success: true,
+            data: result.data
+          });
+          console.log("QR Generator: React Query cache updated");
+        } catch (e) {
+          console.warn("QR Generator: React Query update failed:", e);
+        }
+        
+        // Method 3: Force a broadcast through Supabase by making a small update to the session
+        try {
+          if (result.data?.id) {
+            const { error } = await supabase
+              .from('sessions')
+              .update({ 
+                last_notified_at: new Date().toISOString(),
+                notified: true
+              })
+              .eq('id', result.data.id);
+              
+            if (error) {
+              console.warn("QR Generator: Failed to update session for notification:", error);
+            } else {
+              console.log("QR Generator: Successfully triggered Supabase realtime update");
+            }
+          }
+        } catch (e) {
+          console.warn("QR Generator: Supabase update failed:", e);
+        }
+        
+        // Method 4: Force all browser tabs to update
+        try {
+          // Try to use localStorage to notify other tabs
+          localStorage.setItem('latest_active_session', JSON.stringify({
+            id: result.data.id,
+            timestamp: Date.now()
+          }));
+          console.log("QR Generator: LocalStorage updated for cross-tab communication");
+        } catch (e) {
+          console.warn("QR Generator: LocalStorage update failed:", e);
+        }
+      }
+    } catch (error) {
+      console.warn("QR Generator: Error notifying about session change:", error);
+    }
+  };
+
+  // Update the onSubmit function to include the notification
   const onSubmit = async (data: FormValues) => {
     try {
       setIsSubmitting(true);
@@ -173,8 +269,8 @@ export default function QRGenerator() {
       const expiresAt = qrExpirationDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
 
       // For debugging
-      console.log("Form data being submitted:", data);
-      console.log("QR code will expire at:", expiresAt);
+      console.log("QR Generator: Form data being submitted:", data);
+      console.log("QR Generator: QR code will expire at:", expiresAt);
       
       // Prepare the data for insertion
       const sessionData = {
@@ -184,31 +280,55 @@ export default function QRGenerator() {
         duration: data.duration, // Keep original duration for session length
         qr_code: qrString,
         expires_at: expiresAt, // QR code expires after 10 minutes
-        is_active: true
+        is_active: true, // Explicitly set to active
+        created_at: new Date().toISOString() // Ensure created_at is set
       };
       
-      console.log("Inserting session with data:", sessionData);
+      console.log("QR Generator: Inserting session with data:", sessionData);
+
+      // First, deactivate all existing active sessions to ensure only one active session
+      try {
+        console.log("QR Generator: Deactivating all existing active sessions");
+        const { error: deactivateError } = await supabase
+          .from('sessions')
+          .update({ is_active: false })
+          .eq('is_active', true);
+        
+        if (deactivateError) {
+          console.warn("QR Generator: Failed to deactivate existing sessions:", deactivateError);
+        } else {
+          console.log("QR Generator: Successfully deactivated existing sessions");
+        }
+      } catch (deactivateError) {
+        console.warn("QR Generator: Error during deactivation of sessions:", deactivateError);
+      }
+
+      // Small delay to ensure deactivation completes
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Insert session data into Supabase with prepared data
+      console.log("QR Generator: Inserting new session");
       const { data: insertedData, error } = await supabase
         .from('sessions')
         .insert([sessionData]);
 
       if (error) {
-        console.error("Supabase error:", error);
+        console.error("QR Generator: Supabase error:", error);
         throw new Error(`Database error: ${error.message}`);
       }
 
-      console.log("Session inserted successfully");
+      console.log("QR Generator: Session inserted successfully");
+      
+      // Short delay to ensure database has time to process the insert
+      await new Promise(resolve => setTimeout(resolve, 500));
 
-      // Refresh sessions list - wrapped in try/catch in case refetch fails
-      try {
-        if (typeof refetchSessions === 'function') {
-          await refetchSessions();
-        }
-      } catch (refreshError) {
-        console.warn("Could not refresh sessions list:", refreshError);
-        // Don't throw this error as the insert succeeded
+      // Direct notification to ensure all clients are updated
+      await notifyActiveSessionChange();
+
+      // Refresh sessions list
+      if (typeof refetchSessions === 'function') {
+        console.log("QR Generator: Refreshing sessions list");
+        await refetchSessions();
       }
       
       setSessionSaved(true);
@@ -218,7 +338,7 @@ export default function QRGenerator() {
         description: "New QR code has been generated and will expire in 10 minutes.",
       });
     } catch (error) {
-      console.error("Error generating QR code or saving session:", error);
+      console.error("QR Generator: Error generating QR code or saving session:", error);
       let errorMsg = "An error occurred while generating the QR code or saving the session.";
       
       // Extract more specific error message if available
@@ -232,7 +352,7 @@ export default function QRGenerator() {
       
       toast({
         variant: "destructive",
-        title: "Failed to generate QR code",
+        title: "Error",
         description: errorMsg,
       });
     } finally {

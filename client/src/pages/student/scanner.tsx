@@ -1,10 +1,14 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { getActiveSession } from '../../lib/api';
+import { Html5QrcodePlugin } from '../../components/student/html5-qrcode-plugin';
+import { Button } from '../../components/ui/button';
 import { Card, CardContent } from "@/components/ui/card";
 import { AlertCircle, CheckCircle, QrCode, ClockIcon } from "lucide-react";
 import { markAttendanceWithQR } from "@/lib/qrcode";
 import { useToast } from "@/hooks/use-toast";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import Html5QrcodePlugin from '@/components/student/html5-qrcode-plugin';
+import { useQueryClient } from "@tanstack/react-query";
+import { supabase } from "@/lib/supabase";
 
 // Define types for the data returned from API
 interface AttendanceRecord {
@@ -25,19 +29,140 @@ interface Session {
   isActive: boolean;
 }
 
-export default function StudentScanner() {
+const StudentScannerPage: React.FC = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [scanSuccess, setScanSuccess] = useState(false);
-  const [scanError, setScanError] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanSuccess, setScanSuccess] = useState<boolean>(false);
   const [isExpired, setIsExpired] = useState(false);
 
-  // Fetch active session (but scanner should work even without it)
-  const { data: activeSession } = useQuery<Session>({
-    queryKey: ['/api/sessions/active'],
-    retry: false,
-  });
+  const [activeSession, setActiveSession] = useState<any>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchActiveSession = async () => {
+    try {
+      console.log('Scanner: Fetching active session...');
+      
+      // Create a unique timestamp to defeat any caching
+      const timestamp = new Date().getTime();
+      
+      const response = await fetch(`http://localhost:3000/api/sessions/active?_t=${timestamp}`, {
+        method: 'GET', // Force method to be GET
+        headers: {
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        },
+        // Force fetch to bypass cache completely
+        cache: 'no-store',
+        credentials: 'same-origin'
+      });
+
+      // Add extra debugging for response status and headers
+      console.log('Scanner: Response status:', response.status);
+      console.log('Scanner: Response headers:', Object.fromEntries([...response.headers.entries()]));
+
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Scanner: Non-JSON response:', contentType);
+        setActiveSession(null);
+        setError('Server returned non-JSON response');
+        return;
+      }
+
+      const data = await response.json();
+      console.log('Scanner: Active session response:', JSON.stringify(data, null, 2));
+      
+      if (data.success && data.data) {
+        console.log('Scanner: Active session found:', data.data.id);
+        console.log('Scanner: Session details:', JSON.stringify(data.data, null, 2));
+        
+        // Force React Query to update
+        queryClient.setQueryData(['/api/sessions/active'], {
+          success: true,
+          data: data.data
+        });
+        
+        // Update local state
+        setActiveSession(data.data);
+        setError(null);
+        
+        // Also broadcast a state update event
+        try {
+          window.dispatchEvent(new CustomEvent('active-session-updated', {
+            detail: { id: data.data.id, timestamp: Date.now() }
+          }));
+        } catch (e) {
+          console.warn('Scanner: Could not dispatch custom event', e);
+        }
+      } else {
+        console.log('Scanner: No active session:', data.message);
+        setActiveSession(null);
+        // Don't set error - this is an expected state
+        // Notify other components about no active session
+        queryClient.setQueryData(['/api/sessions/active'], null);
+      }
+    } catch (error) {
+      console.error('Scanner: Error fetching active session:', error);
+      setActiveSession(null);
+      setError('Failed to connect to server. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Set up polling for active session with more frequent checks
+  useEffect(() => {
+    console.log('Scanner: Setting up polling and Supabase subscriptions');
+    
+    // Initial fetch
+    fetchActiveSession();
+    
+    // Set up Supabase realtime subscription for sessions table
+    const subscription = supabase
+      .channel('scanner-session-updates')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'sessions' }, 
+        (payload) => {
+          console.log('Scanner: Supabase realtime update received:', payload);
+          
+          // Check the payload for is_active status changes
+          if (payload.new && payload.new.is_active === true) {
+            console.log('Scanner: New active session detected, fetching immediately');
+            fetchActiveSession();
+          } else if (payload.old && payload.old.is_active === true) {
+            console.log('Scanner: Previously active session changed, fetching immediately');
+            fetchActiveSession();
+          } else {
+            console.log('Scanner: Session update, fetching to check if relevant');
+            fetchActiveSession();
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log('Scanner: Supabase subscription status:', status);
+      });
+
+    // Set up interval for polling as a fallback with more frequent checks
+    const intervalId = setInterval(() => {
+      console.log('Scanner: Polling for active session');
+      fetchActiveSession();
+    }, 3000); // Poll every 3 seconds for more responsiveness
+    
+    // Clean up interval and subscription on component unmount
+    return () => {
+      console.log('Scanner: Cleaning up polling and subscriptions');
+      clearInterval(intervalId);
+      supabase.removeChannel(subscription);
+    };
+  }, [queryClient]);
+
+  // Log when active session changes
+  useEffect(() => {
+    console.log('Scanner: Active session state updated:', activeSession);
+  }, [activeSession]);
 
   // Check if student is already checked in
   const { data: attendanceRecords } = useQuery<AttendanceRecord[]>({
@@ -49,67 +174,142 @@ export default function StudentScanner() {
   );
 
   useEffect(() => {
+    console.log('Active session updated:', activeSession);
     if (activeSession) {
       setScanSuccess(isCheckedIn || false);
-      setScanError(false);
-      setErrorMessage("");
+      setScanError(null);
       setIsExpired(false);
     }
   }, [activeSession, isCheckedIn]);
 
   const handleQrCodeScan = async (decodedText: string) => {
     try {
+      console.log('Scanner: QR code detected:', decodedText);
+      
       // Reset states
       setScanSuccess(false);
-      setScanError(false);
-      setErrorMessage("");
-      setIsExpired(false);
+      setScanError(null);
       
-      let parsedQR;
+      if (!activeSession) {
+        setScanError('No active session found');
+        return;
+      }
+      
+      // Parse the QR data
+      let qrData;
       try {
-        parsedQR = JSON.parse(decodedText);
-        if (!parsedQR.sessionId) {
-          throw new Error("Invalid QR code format");
-        }
-      } catch (parseError) {
-        throw new Error("Invalid QR code format - could not parse QR data");
+        qrData = JSON.parse(decodedText);
+      } catch (error) {
+        console.error('Scanner: Invalid QR code format:', error);
+        setScanError('Invalid QR code format');
+        return;
       }
-
-      await markAttendanceWithQR(decodedText);
-      setScanSuccess(true);
-      refetchAttendance();
-
-      // Show success toast
-      toast({
-        title: "Attendance Marked",
-        description: "You have successfully checked in!",
-      });
-    } catch (error: any) {
-      console.error("QR scan error:", error);
-      setScanError(true);
       
-      // Check if it's an expiration error
-      if (error.message && error.message.toLowerCase().includes("expired")) {
-        setIsExpired(true);
-        setErrorMessage("This QR code has expired. Please ask for a new code.");
-      } else {
-        setErrorMessage(error.message || "Failed to process QR code");
+      // Validate the QR data
+      if (!qrData.sessionId) {
+        console.error('Scanner: Invalid QR code data:', qrData);
+        setScanError('Invalid QR code data');
+        return;
+      }
+      
+      // Check if the QR code is for the current active session
+      if (qrData.sessionId !== activeSession.id) {
+        console.error('Scanner: QR code session ID mismatch:', qrData.sessionId, activeSession.id);
+        setScanError('This QR code is for a different session');
+        return;
+      }
+      
+      // Check if the QR code has expired
+      const expiryTime = new Date(qrData.expires_at).getTime();
+      const currentTime = Date.now();
+      if (currentTime > expiryTime) {
+        console.error('Scanner: QR code has expired');
+        setScanError('This QR code has expired');
+        return;
       }
 
-      // Show error toast
-      toast({
-        variant: "destructive",
-        title: isExpired ? "QR Code Expired" : "Scan Failed",
-        description: error.message || "Error scanning QR code. Please try again.",
+      console.log('Scanner: Marking attendance for session:', qrData.sessionId);
+      
+      const response = await fetch(`http://localhost:3000/api/attendance/${qrData.sessionId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({ 
+          qrData: decodedText,
+          sessionId: qrData.sessionId
+        })
       });
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Scanner: Non-JSON response:', contentType);
+        setScanError('Server returned an invalid response');
+        return;
+      }
+      
+      const data = await response.json();
+      console.log('Scanner: Attendance marking response:', data);
+      
+      if (!response.ok || !data.success) {
+        console.error('Scanner: Error marking attendance:', data.message);
+        setScanError(data.message || 'Failed to mark attendance');
+        return;
+      }
+      
+      console.log('Scanner: Attendance marked successfully');
+      setScanSuccess(true);
+      
+      // Refresh the active session data
+      fetchActiveSession();
+      
+    } catch (error) {
+      console.error('Scanner: Error in QR code processing:', error);
+      setScanError(error instanceof Error ? error.message : 'Failed to process QR code');
     }
   };
-  
-  // Get the refetch function from the query
-  const { refetch: refetchAttendance } = useQuery<AttendanceRecord[]>({
-    queryKey: ['/api/attendance/me'],
-    enabled: false, // Disable automatic fetching since we'll trigger it manually
-  });
+
+  // Add window focus and custom event handlers
+  useEffect(() => {
+    // Function to handle window focus events
+    const handleWindowFocus = () => {
+      console.log('Scanner: Window focused, refreshing active session');
+      fetchActiveSession();
+    };
+
+    // Listen for the custom event from QR generator
+    const handleSessionCreated = (event: any) => {
+      console.log('Scanner: Received session-created event:', event.detail);
+      fetchActiveSession();
+    };
+
+    // Set up event listeners
+    window.addEventListener('focus', handleWindowFocus);
+    window.addEventListener('session-created', handleSessionCreated);
+
+    // Clean up
+    return () => {
+      window.removeEventListener('focus', handleWindowFocus);
+      window.removeEventListener('session-created', handleSessionCreated);
+    };
+  }, []);
+
+  if (!activeSession) {
+    return (
+      <div className="container mx-auto p-4">
+        <div className="text-center py-8">
+          <h2 className="text-2xl font-bold text-red-500 mb-4">No Active Session Found</h2>
+          <p className="text-gray-600 mb-4">
+            There is currently no active attendance session. Please try again when a session is active.
+          </p>
+          <Button onClick={() => window.location.href = '/student'}>
+            Return to Dashboard
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="container mx-auto px-4 py-6 space-y-6">
@@ -138,11 +338,11 @@ export default function StudentScanner() {
               <>
                 {/* Fixed dimensions for QR scanner */}
                 <div className="qr-scanner-container w-[300px] h-[300px] max-w-full mx-auto mb-4 relative">
-                  <Html5QrcodePlugin 
+                  <Html5QrcodePlugin
                     fps={10}
-                    qrCodeSuccessCallback={handleQrCodeScan}
-                    qrCodeErrorCallback={() => {}}
+                    qrbox={250}
                     disableFlip={false}
+                    qrCodeSuccessCallback={handleQrCodeScan}
                   />
                 </div>
               </>
@@ -178,7 +378,7 @@ export default function StudentScanner() {
                     {isExpired ? 'QR Code Expired' : 'Error scanning QR code'}
                   </p>
                   <p className={`text-sm ${isExpired ? 'text-yellow-700 dark:text-yellow-300' : 'text-red-700 dark:text-red-300'}`}>
-                    {errorMessage || "The QR code may be invalid or expired. Please try again or contact your instructor."}
+                    {scanError || "The QR code may be invalid or expired. Please try again or contact your instructor."}
                   </p>
                 </div>
               </div>
@@ -188,4 +388,6 @@ export default function StudentScanner() {
       </Card>
     </div>
   );
-}
+};
+
+export default StudentScannerPage;
